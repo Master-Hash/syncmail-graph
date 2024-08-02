@@ -38,7 +38,7 @@ export default {
     const Modify4 = env.DB.prepare("DELETE FROM GlobalMessages WHERE Folder = ? AND MessageID <> ? AND FolderSerial = ?");
 
 
-    const accessToken = await env.AZ_TOKENS.get("access_token");
+    let accessToken = await env.AZ_TOKENS.get("access_token");
     if (accessToken === null) {
       const refreshToken = await env.AZ_TOKENS.get("refresh_token");
       if (refreshToken === null || !env.CLIENT_ID || !env.CLIENT_SECRET) {
@@ -46,7 +46,7 @@ export default {
       }
       const d = new URLSearchParams();
       d.append("client_id", env.CLIENT_ID);
-      d.append("scope", "User.Read Mail.ReadBasic offline_access");
+      d.append("scope", "User.Read Mail.Read offline_access");
       d.append("refresh_token", refreshToken);
       d.append("grant_type", "refresh_token");
       d.append("client_secret", env.CLIENT_SECRET);
@@ -73,8 +73,9 @@ export default {
         access_token: string;
         refresh_token: string;
       };
-      await env.AZ_TOKENS.put("access_token", data.access_token, { expirationTtl: data.expires_in - 60 });
+      await env.AZ_TOKENS.put("access_token", data.access_token, { expirationTtl: data.expires_in - 90 });
       await env.AZ_TOKENS.put("refresh_token", data.refresh_token);
+      accessToken = data.access_token;
     }
     const _folders = await fetch("https://graph.microsoft.com/v1.0/me/mailFolders?$filter=displayName%20eq%20'收件箱'%20or%20displayName%20eq%20'已发送邮件'&$select=displayName,totalItemCount", {
       headers: {
@@ -90,23 +91,24 @@ export default {
     console.log(folders);
     // const f = Object.groupBy(folders.value, ({ displayName }) => displayName);
     const inbox = folders.value.find(({ displayName }) => displayName === "收件箱");
-    const _i = await fetch("https://graph.microsoft.com/v1.0/me/mailFolders('Inbox')/messages?$select=receivedDateTime,subject,internetMessageId,internetMessageHeaders,from,toRecipients,ccRecipients&$top=16", {
+    const _i = await fetch("https://graph.microsoft.com/v1.0/me/mailFolders('Inbox')/messages?$select=receivedDateTime,subject,internetMessageId,from,toRecipients,ccRecipients&$top=8&$expand=singleValueExtendedProperties($filter=id%20eq%20'String%200x1042')", {
       headers: {
         "Authorization": `Bearer ${accessToken}`
       }
     });
     const i = await _i.json() as { value: Message[]; };
-    console.log(i);
+    // console.log(i.value.find(({ singleValueExtendedProperties }) => singleValueExtendedProperties)?.singleValueExtendedProperties);
+    // console.log(i);
     await modifyDatabaseStatements("Inbox", i.value, inbox!.totalItemCount);
 
     const sentItems = folders.value.find(({ displayName }) => displayName === "已发送邮件");
-    const _s = await fetch("https://graph.microsoft.com/v1.0/me/mailFolders('SentItems')/messages?$select=receivedDateTime,subject,internetMessageId,internetMessageHeaders,from,toRecipients,ccRecipients&$top=16", {
+    const _s = await fetch("https://graph.microsoft.com/v1.0/me/mailFolders('SentItems')/messages?$select=receivedDateTime,subject,internetMessageId,from,toRecipients,ccRecipients&$top=8&$expand=singleValueExtendedProperties($filter=id%20eq%20'String%200x1042')", {
       headers: {
         "Authorization": `Bearer ${accessToken}`
       }
     });
     const s = await _s.json() as { value: Message[]; };
-    console.log(s);
+    // console.log(s.value.find(({ singleValueExtendedProperties }) => singleValueExtendedProperties)?.singleValueExtendedProperties);
     await modifyDatabaseStatements("Sent", s.value, sentItems!.totalItemCount);
 
     async function modifyDatabaseStatements(box: string, messages: Message[], totalItemCount: number): Promise<void> {
@@ -121,10 +123,10 @@ export default {
             s,
             new Date(message.receivedDateTime).valueOf() / 1000,
             // message.internetMessageHeaders.find(({ name }) => name.toLowerCase() === "in-reply-to")?.value ?? null,
-            null,
+            message.singleValueExtendedProperties?.find(({ id }) => id === "String 0x1042")?.value ?? null,
             message.subject,
             JSON.stringify(message.from.emailAddress),
-            JSON.stringify(message.toRecipients.map(({ emailAddress }) => emailAddress)),
+            JSON.stringify([...message.toRecipients, ...message.ccRecipients].map(({ emailAddress }) => emailAddress)),
             0,
             serial,
           ));
@@ -164,13 +166,17 @@ type Message = {
   receivedDateTime: string;
   internetMessageId: string;
   subject: string;
-  internetMessageHeaders: Array<{
-    name: string;
-    value: string;
-  }>;
+  // internetMessageHeaders: Array<{
+  //   name: string;
+  //   value: string;
+  // }>;
   from: EmailAddress;
   toRecipients: Array<EmailAddress>;
   ccRecipients: Array<EmailAddress>;
+  singleValueExtendedProperties?: Array<{
+    id: string;
+    value: string;
+  }>;
 };
 
 type EmailAddress = {

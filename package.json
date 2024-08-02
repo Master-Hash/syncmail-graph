@@ -6,12 +6,13 @@
         "deploy": "wrangler deploy",
         "dev": "wrangler dev --test-scheduled",
         "start": "wrangler dev --test-scheduled",
+        "tail": "wrangler tail",
         "cf-typegen": "wrangler types"
     },
     "devDependencies": {
         "@cloudflare/workers-types": "^4.20240725.0",
         "typescript": "^5.5.4",
-        "wrangler": "^3.67.1"
+        "wrangler": "^3.68.0"
     },
     "packageManager": "pnpm@9.6.0",
     "dependencies": {

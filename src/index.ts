@@ -32,11 +32,9 @@ export default {
     // In this template, we'll just log the result:
     // console.log(`trigger fired at ${event.cron}: ${wasSuccessful}`);
 
-    const Modify1 = env.DB.prepare("INSERT OR IGNORE INTO GlobalMessages (Folder, MessageID, MessageIDHash, Epoch, InReplyTo, SubjectLine, Author, Recipients, RAWMessage, FolderSerial) VALUES (?,?,?,?,?,?,?,?,?,?)");
-    const Modify2 = env.DB.prepare("UPDATE GlobalMessages SET FolderSerial = ? WHERE MessageIDHash = ?");
-    const Modify3 = env.DB.prepare("DELETE FROM GlobalMessages WHERE Folder = ? AND FolderSerial > ?");
-    const Modify4 = env.DB.prepare("DELETE FROM GlobalMessages WHERE Folder = ? AND MessageID <> ? AND FolderSerial = ?");
-
+    const session = env.DB.withSession("first-primary");
+    const Modify5 = session.prepare("INSERT INTO GlobalMessages (Folder, MessageID, MessageIDHash, Epoch, InReplyTo, SubjectLine, Author, Recipients, RAWMessage, FolderSerial) VALUES(?,?,?,?,?,?,?,?,?,?),(?,?,?,?,?,?,?,?,?,?),(?,?,?,?,?,?,?,?,?,?),(?,?,?,?,?,?,?,?,?,?),(?,?,?,?,?,?,?,?,?,?),(?,?,?,?,?,?,?,?,?,?),(?,?,?,?,?,?,?,?,?,?),(?,?,?,?,?,?,?,?,?,?) ON conflict (MessageID) do UPDATE SET FolderSerial = excluded.FolderSerial");
+    const Modify6 = session.prepare("WITH Cleaner (MessageID) AS (VALUES (?),(?),(?),(?),(?),(?),(?),(?)) DELETE FROM GlobalMessages WHERE Folder = ? AND ((MessageID NOT IN (SELECT MessageID FROM Cleaner) AND FolderSerial > ? - 8) OR FolderSerial > ?)");
 
     let accessToken = await env.AZ_TOKENS.get("access_token");
     if (accessToken === null) {
@@ -91,78 +89,87 @@ export default {
     console.log(folders);
     // const f = Object.groupBy(folders.value, ({ displayName }) => displayName);
     const inbox = folders.value.find(({ displayName }) => displayName === "收件箱");
-    const _i = await fetch("https://graph.microsoft.com/v1.0/me/mailFolders('Inbox')/messages?$select=receivedDateTime,subject,internetMessageId,from,toRecipients,ccRecipients&$top=8&$expand=singleValueExtendedProperties($filter=id%20eq%20'String%200x1042')", {
+    const sentItems = folders.value.find(({ displayName }) => displayName === "已发送邮件");
+    const [_i, _s] = await Promise.all([fetch("https://graph.microsoft.com/v1.0/me/mailFolders('Inbox')/messages?$select=receivedDateTime,subject,internetMessageId,from,toRecipients,ccRecipients&$top=8&$expand=singleValueExtendedProperties($filter=id%20eq%20'String%200x1042')", {
       headers: {
         "Authorization": `Bearer ${accessToken}`
       }
-    });
-    const i = await _i.json() as { value: Message[]; };
+    }), fetch("https://graph.microsoft.com/v1.0/me/mailFolders('SentItems')/messages?$select=receivedDateTime,subject,internetMessageId,from,toRecipients,ccRecipients&$top=8&$expand=singleValueExtendedProperties($filter=id%20eq%20'String%200x1042')", {
+      headers: {
+        "Authorization": `Bearer ${accessToken}`
+      }
+    })]);
+    const [i, s] = await Promise.all([
+      _i.json(),
+      _s.json()
+    ]) as [
+        { value: OutlookMessage[]; },
+        { value: OutlookMessage[]; }
+      ];
+
+    // const i = await _i.json() as { value: OutlookMessage[]; };
     // console.log(i.value.find(({ singleValueExtendedProperties }) => singleValueExtendedProperties)?.singleValueExtendedProperties);
     // console.log(i);
-    await modifyDatabaseStatements("Inbox", i.value, inbox!.totalItemCount);
+    const s1 = await modifyDatabaseStatements2("Inbox", i.value, inbox!.totalItemCount);
 
-    const sentItems = folders.value.find(({ displayName }) => displayName === "已发送邮件");
-    const _s = await fetch("https://graph.microsoft.com/v1.0/me/mailFolders('SentItems')/messages?$select=receivedDateTime,subject,internetMessageId,from,toRecipients,ccRecipients&$top=8&$expand=singleValueExtendedProperties($filter=id%20eq%20'String%200x1042')", {
-      headers: {
-        "Authorization": `Bearer ${accessToken}`
-      }
-    });
-    const s = await _s.json() as { value: Message[]; };
+    // const s = await _s.json() as { value: OutlookMessage[]; };
     // console.log(s.value.find(({ singleValueExtendedProperties }) => singleValueExtendedProperties)?.singleValueExtendedProperties);
-    await modifyDatabaseStatements("Sent", s.value, sentItems!.totalItemCount);
+    const s2 = await modifyDatabaseStatements2("Sent", s.value, sentItems!.totalItemCount);
 
-    async function modifyDatabaseStatements(box: string, messages: Message[], totalItemCount: number): Promise<void> {
+    const e = await env.DB.batch([
+      ...s1,
+      ...s2,
+    ]);
+
+    console.log(e);
+
+    async function modifyDatabaseStatements2(box: "Inbox" | "Sent", messages: OutlookMessage[], totalItemCount: number): Promise<Array<D1PreparedStatement>> {
       const batch = [] as Array<D1PreparedStatement>;
+      const argsUpsert = [] as Array<[
+        "Inbox" | "Sent", // Folder
+        string, // MessageID
+        string, // MessageIDHash
+        number, // Epoch
+        string | null, // InReplyTo
+        string, // SubjectLine
+        string, // Author
+        string, // Recipients
+        0, // RAWMessage
+        number, // FolderSerial
+      ]>;
       for (const [index, message] of messages.entries()) {
         const serial = totalItemCount - index;
         const s = await sha256(message.internetMessageId);
-        batch.push(Modify1
-          .bind(
-            box,
-            message.internetMessageId,
-            s,
-            new Date(message.receivedDateTime).valueOf() / 1000,
-            // message.internetMessageHeaders.find(({ name }) => name.toLowerCase() === "in-reply-to")?.value ?? null,
-            message.singleValueExtendedProperties?.find(({ id }) => id === "String 0x1042")?.value ?? null,
-            message.subject,
-            JSON.stringify(message.from.emailAddress),
-            JSON.stringify([...message.toRecipients, ...message.ccRecipients].map(({ emailAddress }) => emailAddress)),
-            0,
-            serial,
-          ));
-        batch.push(Modify2
-          .bind(
-            serial,
-            s,
-          ));
-      }
-      batch.push(Modify3
-        .bind(
+        argsUpsert.push([
           box,
-          totalItemCount,
-        ));
-      for (const [index, message] of messages.entries()) {
-        const serial = totalItemCount - index;
-        batch.push(
-          Modify4
-            .bind(
-              box,
-              message.internetMessageId,
-              serial,
-            )
-        );
+          message.internetMessageId,
+          s!,
+          new Date(message.receivedDateTime).valueOf() / 1000,
+          message.singleValueExtendedProperties?.find(({ id }) => id === "String 0x1042")?.value ?? null,
+          message.subject,
+          JSON.stringify(message.from.emailAddress),
+          JSON.stringify([...message.toRecipients, ...message.ccRecipients].map(({ emailAddress }) => emailAddress)),
+          0,
+          serial,
+        ]);
       }
-      const e = await env.DB.batch(batch);
-      console.log(e);
+      console.log(argsUpsert.flat());
+      batch.push(Modify5.bind(...argsUpsert.flat()));
+
+      batch.push(Modify6.bind(
+        ...argsUpsert.map(i => i[1]),
+        box,
+        totalItemCount,
+        totalItemCount,
+      ));
+      return batch;
     }
-
-
   },
 } satisfies ExportedHandler<Env>;
 
 
 
-type Message = {
+type OutlookMessage = {
   receivedDateTime: string;
   internetMessageId: string;
   subject: string;

@@ -1,7 +1,7 @@
 #:schema node_modules/wrangler/config-schema.json
 name = "syncmail-graph"
 main = "src/index.ts"
-compatibility_date = "2025-04-05"
+compatibility_date = "2025-11-28"
 workers_dev = false
 
 [observability]

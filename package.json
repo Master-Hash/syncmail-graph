@@ -12,10 +12,10 @@
     },
     "devDependencies": {
         "typescript": "^5.9.3",
-        "wrangler": "^4.54.0"
+        "wrangler": "^4.79.0"
     },
     "packageManager": "pnpm@10.24.0",
     "dependencies": {
-        "hono": "^4.11.3"
+        "hono": "^4.12.9"
     }
 }

@@ -11,11 +11,11 @@
         "cf-typegen": "wrangler types"
     },
     "devDependencies": {
-        "typescript": "^6.0.2",
-        "wrangler": "^4.79.0"
+        "typescript": "^6.0.3",
+        "wrangler": "^4.106.0"
     },
     "packageManager": "pnpm@10.24.0",
     "dependencies": {
-        "hono": "^4.12.9"
+        "hono": "^4.12.27"
     }
 }
